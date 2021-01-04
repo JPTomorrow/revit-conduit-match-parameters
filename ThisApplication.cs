@@ -6,7 +6,8 @@ using System.Collections.Generic;
 using System.Linq;
 using JPMorrow.Tools.Revit.MEP.Selection;
 using JPMorrow.Revit.ConduitRuns;
-using JPMorrow.Custom.Revit.Documents;
+using JPMorrow.Revit.Documents;
+using JPMorrow.Tools.Diagnostics;
 
 namespace MainApp
 {
@@ -22,8 +23,11 @@ namespace MainApp
 	{
 		public Result Execute(ExternalCommandData cData, ref string message, ElementSet elements)
         {
+			string[] dataDirectories = new string[0];
+			bool debugApp = false;
+
 			//set revit documents
-			ModelInfo revit_info = ModelInfo.StoreDocuments(cData);
+			ModelInfo revit_info = ModelInfo.StoreDocuments(cData, dataDirectories, debugApp);
 
 			//spool up search system
 			List<Reference> highlighted_elements = new List<Reference>();
@@ -64,7 +68,7 @@ namespace MainApp
 				if (p_null(conToProp, "From") || p_null(conToProp, "To") ||
 					p_null(conToProp, "Wire Size") || p_null(conToProp, "Comments"))
 				{
-					RevitCustom.RevitCustomDebugger.Show(
+					debugger.show(
 						header: "Conduit Match Params", sub: "Parameters",
 						err: "You do not have the 'To', 'From', or 'Wire Size' parameters loaded for conduits.");
 					return Result.Succeeded;
@@ -79,8 +83,8 @@ namespace MainApp
 						tx.Start();
 						foreach(var conduit in conduits_to_propogate)
 						{
-							RunNetwork rn = ConduitNetwork.GetRunNetworkToJbox(conduit);
-							foreach(var id in rn.run_ids)
+							RunNetwork rn = new RunNetwork(conduit);
+							foreach(var id in rn.RunIds.Concat(rn.FittingIds))
 							{
 								Element el = revit_info.DOC.GetElement(new ElementId(id));
 								p(el, "From").Set(		p(conToProp, "From").AsString());
