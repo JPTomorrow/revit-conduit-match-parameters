@@ -6,8 +6,8 @@ using System.Collections.Generic;
 using System.Linq;
 using JPMorrow.Tools.Revit.MEP.Selection;
 using JPMorrow.Revit.ConduitRuns;
-using JPMorrow.Revit.Documents;
 using JPMorrow.Tools.Diagnostics;
+using JPMorrow.Revit.Documents;
 
 namespace MainApp
 {
@@ -82,10 +82,10 @@ namespace MainApp
 					{
 						tx.Start();
 						foreach(var conduit in conduits_to_propogate)
-						{
+{
 							RunNetwork rn = new RunNetwork(conduit);
-							foreach(var id in rn.RunIds.Concat(rn.FittingIds))
-							{
+
+							foreach(var id in rn.RunIds.Concat(rn.FittingIds)) {
 								Element el = revit_info.DOC.GetElement(new ElementId(id));
 								p(el, "From").Set(		p(conToProp, "From").AsString());
 								p(el, "To").Set(		p(conToProp, "To").AsString());
