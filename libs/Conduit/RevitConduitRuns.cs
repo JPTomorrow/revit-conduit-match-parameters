@@ -5,20 +5,17 @@ using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
 using JPMorrow.Revit.Documents;
-using JPMorrow.Revit.Tools;
 using JPMorrow.Tools.Diagnostics;
 using JPMorrow.Revit.RvtMiscUtil;
-using System.IO;
-using JPMorrow.Revit.Wires;
-using JPMorrow.Revit.Tools.ConduitFittings;
 using JPMorrow.Revit.Text;
+using JPMorrow.Revit.Measurements;
 
 namespace JPMorrow.Revit.ConduitRuns
 {
-	/// <summary>
-	/// Represents a conduit run in Revit
-	/// </summary>
-	[DataContract]
+    /// <summary>
+    /// Represents a conduit run in Revit
+    /// </summary>
+    [DataContract]
 	public class ConduitRunInfo
 	{
 		[DataMember]
@@ -40,28 +37,66 @@ namespace JPMorrow.Revit.ConduitRuns
 		[DataMember]
 		public double FittingBends { get; private set; }
 		[DataMember]
-		public int GeneratingConduitId { get; private set; }
+        public int GeneratingConduitId { get; private set; }
 
-		public int[] WireIds { get => ConduitIds.Concat(FittingIds).ToArray(); }
 
-		// string conversions
-		public string DiameterStr(ModelInfo info) => UnitFormatUtils.Format(info.DOC.GetUnits(), UnitType.UT_Length, Diameter, true, false, CustomFormatValue.FeetAndInches);
-		public string LengthStr(ModelInfo info) => UnitFormatUtils.Format(info.DOC.GetUnits(), UnitType.UT_Length, Length, true, false, CustomFormatValue.FeetAndInches);
-		public string FittingBendsStr(ModelInfo info) => UnitFormatUtils.Format(info.DOC.GetUnits(), UnitType.UT_Angle, FittingBends, true, false);
+        public int[] WireIds { get => ConduitIds.Concat(FittingIds).ToArray(); }
 
 		public void OverrideToStr(string val) => To = val;
+        public void OverrideMaterialType(string type) => ConduitMaterialType = type;
+
+        // string conversions
+        public string DiameterStr(ModelInfo info) => RMeasure.LengthFromDbl(info, Diameter);
+		public string LengthStr(ModelInfo info) => RMeasure.LengthFromDbl(info, Length);
+		public string FittingBendsStr(ModelInfo info) => RMeasure.AngleFromDouble(info, FittingBends);
+
+		public string GetSets(ModelInfo info) {
+
+			Element el(int x) => info.DOC.GetElement(new ElementId(x));
+			Parameter p(int x) => el(x).LookupParameter("Set(s)");
+			bool is_empty(int x) => string.IsNullOrWhiteSpace(p(x).AsString());
+			bool is_null(int x) => p(x) == null;
+
+			foreach(var id in ConduitIds) {
+				if(!is_null(id) && !is_empty(id)) {
+					return p(id).AsString();
+				}
+			} 
+
+			return "N/A";
+		}
 
 		// Different types of possible conduit material
 		public static string[] ConduitMaterialTypes { get; } = new string[]{
 			"EMT", "PVC", "RNC", "FLEX", "IMC", "RMC"
 		};
 
-		private ConduitRunInfo(
-			ModelInfo info, RunNetwork rn, int[] jbox_ids)
+		public static string[] ConduitMaterialTypeFullNames { get; } = new string[] {
+			"Rigid Nonmetallic Conduit (RNC Sch 40)",
+			"Electrical Metallic Tubing (EMT)",
+		};
+
+        public override string ToString() {
+            return string.Format("[ From: {0}, To: {1} ]", From, To);
+        }
+
+		public string ToString(ModelInfo info)
+		{
+			return string.Format(
+				"Type: {0}\nFrom: {1}\nTo: {2}\nDiameter: {3}\n Length: {4}\nSegments: {5}",
+				ConduitMaterialType, From, To, DiameterStr(info),
+				LengthStr(info), ConduitIds.Count().ToString());
+		}
+
+        public bool Equals(ConduitRunInfo other) {
+            return From.Equals(other.From) && To.Equals(other.To);
+        }
+
+		private ConduitRunInfo(ModelInfo info, RunNetwork rn, int[] jbox_ids)
 		{
 			GeneratingConduitId = rn.StartId;
-			ConduitIds = new List<int>(rn.RunIds);
-			FittingIds = new List<int>(rn.FittingIds);
+			ConduitIds = new List<int>(rn.RunIds.OrderBy(x => x).ToList());
+			FittingIds = new List<int>(rn.FittingIds.OrderBy(x => x).ToList());
 			RunEndpointInfo = new RunEndpointInfo[2];
 
 			// get endpoint info
@@ -83,37 +118,31 @@ namespace JPMorrow.Revit.ConduitRuns
 
 		}
 
-		private void AssimilateCRI(ModelInfo info, ConduitRunInfo cri)
-		{
-			ConduitIds = ConduitIds.Union(cri.ConduitIds).ToList();
-			FittingIds = FittingIds.Union(cri.FittingIds).ToList();
-			RunEndpointInfo = cri.RunEndpointInfo;
-			Length = GetTotalLength(info);
-			Diameter = cri.Diameter;
-			From = cri.From;
-			To = cri.To;
-			FittingBends = cri.FittingBends;
-			ConduitMaterialType = cri.ConduitMaterialType;
-		}
-
 		public static void ProcessCRIFromConduitId(
-			ModelInfo info, IEnumerable<ElementId> ids,
-			List<ConduitRunInfo> add_cri_list)
-		{
+			ModelInfo info, IEnumerable<ElementId> conduit_ids, List<ConduitRunInfo> add_cri_list) {
+			
+			var ids = new List<ElementId>(conduit_ids);
+			ids = ids.OrderBy(x => x.IntegerValue).ToList();
+
 			List<RunNetwork> nets = new List<RunNetwork>();
-			foreach(var id in ids)
-			{
-				var rn = new RunNetwork(info.DOC.GetElement(id));
-				if(!nets.Any(net => net.RunIds.Concat(net.FittingIds).Contains(rn.StartId)))
-					nets.Add(rn);
+
+			while(ids.Any()) {
+				var id = ids.First();
+				var rn = new RunNetwork(info, info.DOC.GetElement(id));
+
+				// remove ids from list of possible ids
+				var rem_ids = ids.Where(x => rn.AllIds.Any(y => y == x.IntegerValue));
+				rem_ids.ToList().ForEach(x => ids.Remove(x));
+				nets.Add(rn);
 			}
 
 			Stack<RunNetwork> fitting_nets = new Stack<RunNetwork>(nets);
 			nets.Clear();
-			while(fitting_nets.Any())
-			{
+
+			while(fitting_nets.Any()) {
 				var rn = fitting_nets.Pop();
 				var f = rn.FittingIds;
+				
 				f.ForEach(id => {
 					if(fitting_nets.Any(net => net.FittingIds.Any(rnid => rnid == id)))
 						rn.FittingIds.Remove(id);
@@ -122,8 +151,7 @@ namespace JPMorrow.Revit.ConduitRuns
 			}
 
 			var cris = new List<ConduitRunInfo>();
-			foreach(var rn in nets)
-			{
+			foreach(var rn in nets) {
 				cris.Add(new ConduitRunInfo(info, rn, rn.ConnectedJboxIds.ToArray()));
 			}
 
@@ -135,25 +163,18 @@ namespace JPMorrow.Revit.ConduitRuns
 		/// </summary>
 		private string GetFrom(ModelInfo info)
 		{
-			string ret_from = "";
-			foreach (var id in ConduitIds)
-			{
-				Element conduit = info.DOC.GetElement(new ElementId(id));
-				string from = conduit.LookupParameter("From").AsString();
+			if(!ConduitIds.Any()) return "UNSET";
+			
+			Element el(int id) => info.DOC.GetElement(new ElementId(id));
+			bool has_from(int id) => el(id) != null && el(id).LookupParameter("From") != null;
+			string from(int id) => el(id).LookupParameter("From").AsString();
+			bool has_val(int id) => !string.IsNullOrWhiteSpace(from(id)); 
+			
+			if(!ConduitIds.Any(x => has_from(x))) return "NO FROM PARAMETER LOADED";
 
-				// prime the value
-				if(id == ConduitIds.First())
-					ret_from = from;
-
-				if(String.IsNullOrWhiteSpace(from) || ret_from != from)
-				{
-					ret_from = "UNSET";
-					break;
-				}
-				else
-					ret_from = from;
-			}
-			return ret_from;
+			var id = ConduitIds.FirstOrDefault(x => has_from(x) && has_val(x));
+			if(id <= 0) return "UNSET";
+			return !ConduitIds.All(x => has_from(x) && has_val(x) && from(x).Equals(from(id))) ? "UNSET" : from(id);
 		}
 
 		/// <summary>
@@ -161,25 +182,18 @@ namespace JPMorrow.Revit.ConduitRuns
 		/// </summary>
 		private string GetTo(ModelInfo info)
 		{
-			string ret_to = "UNSET";
-			foreach (var id in ConduitIds)
-			{
-				Element conduit = info.DOC.GetElement(new ElementId(id));
-				string to = conduit.LookupParameter("To").AsString();
+			if(!ConduitIds.Any()) return "UNSET";
 
-				// prime the value
-				if(id == ConduitIds.First())
-					ret_to = to;
+			Element el(int id) => info.DOC.GetElement(new ElementId(id));
+			bool has_to(int id) => el(id) != null && el(id).LookupParameter("To") != null;
+			string to(int id) => el(id).LookupParameter("To").AsString();
+			bool has_val(int id) => !string.IsNullOrWhiteSpace(to(id)); 
 
-				if(String.IsNullOrWhiteSpace(to) || ret_to != to)
-				{
-					ret_to = "UNSET";
-					break;
-				}
-				else
-					ret_to = to;
-			}
-			return ret_to;
+			if(!ConduitIds.Any(x => has_to(x))) return "NO TO PARAMETER LOADED";
+
+			var id = ConduitIds.FirstOrDefault(x => has_to(x) && has_val(x));
+			if(id <= 0) return "UNSET";
+			return !ConduitIds.All(x => has_to(x) && has_val(x) && to(x).Equals(to(id))) ? "UNSET" : to(id);
 		}
 
 		private string GetConduitMaterialType(ModelInfo info)
@@ -265,17 +279,6 @@ namespace JPMorrow.Revit.ConduitRuns
 
 			return param_outputs.Any() ? param_outputs.First() : "";
 		}
-
-		/// <summary>
-		/// ToString override
-		/// </summary>
-		public string ToString(ModelInfo info)
-		{
-			return string.Format(
-				"Type: {0}\nFrom: {1}\nTo: {2}\nDiameter: {3}\n Length: {4}\nSegments: {5}",
-				ConduitMaterialType, From, To, DiameterStr(info),
-				LengthStr(info), ConduitIds.Count().ToString());
-		}
 	}
 
 	/// <summary>
@@ -318,8 +321,14 @@ namespace JPMorrow.Revit.ConduitRuns
 		public List<int> ConnectedJboxIds {  get; private set; }
 		public int StartId {  get; private set; }
 
-		public RunNetwork(Element first_conduit)
-		{
+		public List<int> AllIds { get => RunIds.Concat(FittingIds).ToList(); }
+
+		public override string ToString() {
+			return string.Join("\n", RunIds.Concat(FittingIds).Select(x => x.ToString()));
+		}
+
+		public RunNetwork(ModelInfo info, Element first_conduit) {
+
 			RunIds = new List<int>();
 			FittingIds = new List<int>();
 			ConnectedJboxIds = new List<int>();
@@ -340,63 +349,68 @@ namespace JPMorrow.Revit.ConduitRuns
 			bool continue_processing = true;
 			bool flopped_sides = false;
 
-			while(continue_processing)
-			{
-				ConduitConnectorPack ccp = new ConduitConnectorPack(next_connector, prev_type);
+			string log_str = "";
+			void add_to_log(string txt) => log_str += txt + "\n";
 
-				void pushCat(Element el)
-				{
-					if(el.Category.Name.Equals("Conduits"))
-					{
+			while(continue_processing) {
+
+				ConduitConnectorPack ccp = new ConduitConnectorPack(info, next_connector, prev_type);
+
+				void pushCat(Element el) {
+					if(el.Category.Name.Equals("Conduits")) {
 						RunIds.Add(el.Id.IntegerValue);
 					}
-					else if(el.Category.Name.Equals("Conduit Fittings"))
-					{
+					else if(el.Category.Name.Equals("Conduit Fittings")) {
 						FittingIds.Add(el.Id.IntegerValue);
 					}
 				}
 
-				string log_str = "";
-				switch(ccp.Result)
-				{
+				switch(ccp.Result) {
+
 					case NetworkResult.proceed:
-						log_str = "proceed";
+						add_to_log("proceed");
 						pushCat(ccp.Conduit);
 						setPrevType(ccp.Conduit);
 						next_connector = ccp.NextConnector;
 						break;
+
 					case NetworkResult.stop_end_of_conduit:
-						log_str = "stop! end of conduit";
-						if(!flopped_sides)
-						{
+						add_to_log("stop! end of conduit");
+
+						if(!flopped_sides && end_connectors[1] != null) {
+							add_to_log("FLIPPING SIDES!!!!!!!!");
 							flopped_sides = true;
 							next_connector = end_connectors[1];
 						}
 						else
 							continue_processing = false;
 						break;
+
 					case NetworkResult.stop_jbox:
-						log_str = "stop! junction box";
+						add_to_log("stop! junction box");
 						ConnectedJboxIds.Add(ccp.Conduit.Id.IntegerValue);
-						if(!flopped_sides)
-						{
+
+						if(!flopped_sides) {
 							flopped_sides = true;
 							next_connector = end_connectors[1];
 						}
 						else
 							continue_processing = false;
 						break;
+
 					case NetworkResult.error:
-						log_str = "error";
+						add_to_log("error");
 						continue_processing = false;
 						break;
-					default:
-						throw new Exception("run network hit default value.");
-				}
 
-				//DEBUG
-				bool debug = false; if(debug) debugger.show(err:log_str);
+					default:
+						add_to_log("run network hit default value.");
+						continue_processing = false;
+						break;
+				}
 			}
+
+			bool debug = false; if(debug) debugger.debug_show(err:log_str);
 		}
 
 		private enum NetworkResult
@@ -407,6 +421,8 @@ namespace JPMorrow.Revit.ConduitRuns
 			error = -1
 		}
 
+		
+
 		private class ConduitConnectorPack
 		{
 			public Element Conduit { get; private set; }
@@ -415,67 +431,90 @@ namespace JPMorrow.Revit.ConduitRuns
 
 			private static double ConnectorTolerance = .00001;
 
-			public ConduitConnectorPack(Connector c, string prev_type)
+			public ConduitConnectorPack(ModelInfo info, Connector c, string prev_type)
 			{
-				static bool chk_category(string x) => x != "Conduits" && x != "Conduit Fittings";
+				static bool not_conduit_or_fitting(string x) => x != "Conduits" && x != "Conduit Fittings";
 
 				NextConnector = null;
 
-				if(!c.IsConnected)
-				{
+				if(!c.IsConnected) { // conduit not connected to anything
 					Result = NetworkResult.stop_end_of_conduit;
 				}
-				else
-				{
-					Connector first_jump = null;
-					Connector second_jump = null;
-
-					foreach(Connector c2 in c.AllRefs)
-					{
-						if(!c2.Origin.IsAlmostEqualTo(c.Origin, ConnectorTolerance)) continue;
-						first_jump = c2;
-					}
-
-					if(first_jump == null)
-					{
+				else {
+					var all_refs = GetConnectorListFromSet(c.AllRefs).ToList();
+					all_refs.Remove(c);
+					
+					// stop if no connector matches
+					if(!all_refs.Any(x => IsConnectedTo(info, c, x))) {
 						Result = NetworkResult.stop_end_of_conduit;
 						return;
 					}
 
+					Connector first_jump = null;
+
+					first_jump = all_refs.Where(x => IsConnectedTo(info, c, x)).First();
+					
 					Conduit = first_jump.Owner;
-					if(chk_category(Conduit.Category.Name))
-					{
+					if(not_conduit_or_fitting(Conduit.Category.Name)) {
 						Result = NetworkResult.stop_jbox;
 						return;
 					}
 
-					if(Conduit.Category.Name.Equals("Conduits"))
-					{
-						if(!Conduit.Name.Equals(prev_type))
-						{
-							Result = NetworkResult.stop_end_of_conduit;
-							NextConnector = first_jump;
-							return;
-						}
+					// stop if next conduit is of a different material type
+					if(Conduit.Category.Name.Equals("Conduits") && !Conduit.Name.Equals(prev_type)) {
+						Result = NetworkResult.stop_end_of_conduit;
+						NextConnector = first_jump;
+						return;
 					}
 
+					// start of second jump
+					Connector second_jump = null;
 
-					foreach(Connector c3 in RvtUtil.GetConnectors(first_jump.Owner))
-					{
-						if(c3.Origin.IsAlmostEqualTo(first_jump.Origin, ConnectorTolerance)) continue;
-						second_jump = c3;
-					}
+					all_refs = GetConnectorListFromSet(RvtUtil.GetConnectors(first_jump.Owner)).ToList();
+					all_refs.Remove(first_jump);
 
-					if(second_jump == null)
-					{
+					// stop if no connector matches
+					if(!all_refs.Any(x => !IsConnectedTo(info, c, x))) {
 						Result = NetworkResult.error;
 						return;
 					}
 
+					second_jump = all_refs.Where(x => !IsConnectedTo(info, c, x)).First();
+
 					NextConnector = second_jump;
 					Result = NetworkResult.proceed;
-					return;
 				}
+			}
+
+			private IEnumerable<Connector> GetConnectorListFromSet(ConnectorSet c) {
+
+				List<Connector> cc = new List<Connector>();
+				var it = c.ForwardIterator();
+
+				while(it.MoveNext()) {
+					cc.Add(it.Current as Connector);
+				}
+
+				return cc;
+			}
+
+			private bool IsConnectedTo(ModelInfo info, Connector c, Connector c2) {
+
+				if(c.ConnectorType == ConnectorType.Logical || c2.ConnectorType == ConnectorType.Logical) return false;
+				bool s = false;
+
+				try {
+					s = c.Origin.IsAlmostEqualTo(c2.Origin, ConnectorTolerance);
+				}
+				catch {
+					info.SEL.SetElementIds(new[] { c.Owner.Id, c2.Owner.Id });
+
+					var c1type = Enum.GetName(typeof(ConnectorType), c.ConnectorType);
+
+					var c2type = Enum.GetName(typeof(ConnectorType), c2.ConnectorType);
+					throw new Exception( "Connector 1 Type: " + c1type + " | Connector 2 Type" + c2type);
+				}
+				return s;
 			}
 		}
 	}

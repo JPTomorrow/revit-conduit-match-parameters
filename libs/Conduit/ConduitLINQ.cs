@@ -5,6 +5,7 @@ using JPMorrow.Revit.Tools;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB.Electrical;
+using JPMorrow.Revit.Measurements;
 
 public static class ConduitLINQ
 {
@@ -31,12 +32,9 @@ public static class ConduitLINQ
 		this Element conduit, ModelInfo info,
 		View3D view,  IEnumerable<BuiltInCategory> clash_categories, IEnumerable<BuiltInCategory> conduit_categories, out List<Element> next_racked_conduits, double chk_dist = -1)
 	{
-		bool parse_len(string len_str, out double out_val)
-			=> UnitFormatUtils.TryParse(info.DOC.GetUnits(), UnitType.UT_Length, len_str, out out_val);
+		double parse_len(string len_str) => RMeasure.LengthDbl(info, len_str);
 
-		if(chk_dist == -1)
-			parse_len("3\"", out chk_dist);
-
+		if(chk_dist == -1) chk_dist = parse_len("3\"");
 
 		if(!conduit.Category.Name.Equals("Conduits"))
 			throw NaConduit(conduit);
@@ -53,7 +51,7 @@ public static class ConduitLINQ
 		XYZ right = foward.Normalize().CrossProduct(up.Normalize());
 		XYZ left = -right;
 
-		parse_len("8\"", out double between_pipe_distance);
+		var between_pipe_distance = parse_len("8\"");
 
 		// cast rays
 		RRay right_ray = RevitRaycast.Cast(info, view, conduit_categories.ToList(), chk_pt, right, max_distance:between_pipe_distance);

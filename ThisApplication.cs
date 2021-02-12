@@ -83,7 +83,7 @@ namespace MainApp
 						tx.Start();
 						foreach(var conduit in conduits_to_propogate)
 {
-							RunNetwork rn = new RunNetwork(conduit);
+							RunNetwork rn = new RunNetwork(revit_info, conduit);
 
 							foreach(var id in rn.RunIds.Concat(rn.FittingIds)) {
 								Element el = revit_info.DOC.GetElement(new ElementId(id));
@@ -91,6 +91,7 @@ namespace MainApp
 								p(el, "To").Set(		p(conToProp, "To").AsString());
 								p(el, "Wire Size").Set(	p(conToProp, "Wire Size").AsString());
 								p(el, "Comments").Set(	p(conToProp, "Comments").AsString());
+								p(el, "Set(s)").Set(	p(conToProp, "Set(s)").AsString());
 							}
 						}
 						tx.Commit();
