@@ -58,7 +58,6 @@ namespace JPMorrow.Revit.Conduit
                 }
             }
 
-            debugger.show(err: networks.Count().ToString());
             // process the matches
             ProcessMatchTransaction(info, networks);
             return Result.Succeeded;
